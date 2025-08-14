@@ -1,0 +1,33 @@
+name: Brent Watcher
+
+on:
+  workflow_dispatch:
+  schedule:
+    # UTC 时间 00:10 运行（相当于 KST/北京时间 09:10）
+    - cron: "10 0 * * 1-5"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt || pip install yfinance pandas requests
+
+      - name: Run monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SYMBOL: "BZ=F"          # Yahoo Finance 的布伦特主力期货
+          THRESHOLD: "70"         # 价格阈值
+          CONSECUTIVE_DAYS: "5"   # 连续交易日数量
+        run: |
+          python monitor_brent.py
