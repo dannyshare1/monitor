@@ -1,127 +1,61 @@
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, date
 import requests
+import tushare as ts
 
 THRESHOLD = float(os.getenv("THRESHOLD", "1.85"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-# TradingEconomics API key, used when querying their bond yield endpoint. If not
-# provided we fall back to the public `guest:guest` credentials which may be
-# rate limited or return outdated data.
-TE_API_KEY = os.getenv("TE_API_KEY", "guest:guest")
-# Public data source hosted by EastMoney. The endpoint returns a JSON payload
-# with a list of "klines" where each item is a comma separated string, e.g.::
-#
-#     "2024-01-02,2.50,2.48,2.51,2.47,123456"
-#
-# The first entry is the date and the third value represents the closing yield
-# of the day.  We request only a single latest entry (`lmt=1`).
-DEFAULT_API_URLS = [
-    # TradingEconomics current endpoint (2024-2025). We prefer this data source
-    # when a TE_API_KEY is provided. The explicit JSON format parameter avoids
-    # IIS 404 responses in some environments.
-    (
-        "https://api.tradingeconomics.com/bond/yield/china:10y?"
-        f"c={TE_API_KEY}&format=json"
-    ),
-    # Legacy TradingEconomics endpoint kept for backwards compatibility
-    (
-        "https://api.tradingeconomics.com/bonds/cn-10y?"
-        f"c={TE_API_KEY}&format=json"
-    ),
-    # EastMoney bond yield API. `fields1`/`fields2` are required otherwise the
-    # server responds with a 404 HTML page. The closing yield is the third value
-    # in the comma separated "kline" string.
-    (
-        "https://push2.eastmoney.com/api/qt/kline/get"
-        "?secid=131.BND_CND10Y&klt=101&fqt=0&lmt=1"
-        "&fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54"
-    ),
-]
-
-# Custom API endpoint can be supplied via environment variable. If provided it will
-# override the default list above. This allows the script to be flexible if the
-# upstream service changes again or if a user wants to point to a different data
-# source.
-API_URLS = [os.getenv("API_URL")] if os.getenv("API_URL") else DEFAULT_API_URLS
-
+TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
 
 def fail(msg: str, code: int = 1) -> None:
     print(f"Error: {msg}", file=sys.stderr)
     sys.exit(code)
 
+if not TUSHARE_TOKEN:
+    fail("未配置 TUSHARE_TOKEN")
+PRO = ts.pro_api(TUSHARE_TOKEN)
 
-def fetch_yield() -> tuple[float, datetime.date]:
-    """Fetch the latest CN 10Y yield from the first working API endpoint.
 
-    Multiple endpoints are tried in order. The first successful response (HTTP
-    200 and valid JSON body) is used. If all endpoints fail an error is raised.
-    """
-    last_error = None
-    for url in API_URLS:
-        try:
-            r = requests.get(url, timeout=20)
-        except Exception as e:  # network errors
-            last_error = e
-            continue
-        if r.status_code != 200:
-            last_error = RuntimeError(f"HTTP {r.status_code}: {r.text}")
-            continue
-        try:
-            data = r.json()
-        except Exception as e:
-            last_error = e
-            continue
-
-        # EastMoney structure
-        if isinstance(data, dict) and data.get("data", {}).get("klines"):
-            kline = data["data"]["klines"][0]
-            parts = kline.split(",")
+def fetch_yield() -> tuple[float, date]:
+    """从 Tushare 获取最新的中国10年期国债收益率。"""
+    today = datetime.utcnow().strftime("%Y%m%d")
+    try:
+        df = PRO.bond_yield(trade_date=today)
+        if df.empty:
+            start = (datetime.utcnow() - timedelta(days=7)).strftime("%Y%m%d")
+            df = PRO.bond_yield(start_date=start, end_date=today)
+    except Exception as e:
+        raise RuntimeError(f"Tushare 请求失败：{e}")
+    if df.empty:
+        raise RuntimeError("Tushare 未返回数据")
+    row = df.sort_values(by=df.columns[0]).iloc[-1]
+    date_str = str(row.get("date") or row.get("trade_date") or row.get("cal_date"))
+    try:
+        day = datetime.strptime(date_str, "%Y%m%d").date()
+    except Exception:
+        day = datetime.utcnow().date()
+    yld = None
+    for key in ("yield", "yld", "close", "rate", "value"):
+        if key in row:
             try:
-                yld = float(parts[2] if len(parts) > 2 else parts[1])
-            except (IndexError, ValueError) as e:
-                last_error = e
+                yld = float(row[key])
+                break
+            except Exception:
+                pass
+    if yld is None:
+        for col in row.index:
+            if col in ("date", "trade_date", "cal_date"):
                 continue
             try:
-                day = datetime.strptime(parts[0], "%Y-%m-%d").date()
+                yld = float(row[col])
+                break
             except Exception:
-                day = datetime.utcnow().date()
-            return yld, day
-
-        if isinstance(data, list) and data:
-            data = data[0]
-
-        yld = None
-        for key in (
-            "yield",
-            "Yield",
-            "close",
-            "Close",
-            "last",
-            "Last",
-            "value",
-            "Value",
-            "LatestValue",
-            "latestValue",
-        ):
-            if key in data:
-                try:
-                    yld = float(data[key])
-                    break
-                except (TypeError, ValueError):
-                    pass
-        if yld is None:
-            last_error = RuntimeError(f"未从 API 返回数据中解析到利率字段：{data}")
-            continue
-        date_str = data.get("Date") or data.get("date") or data.get("datetime")
-        try:
-            day = datetime.fromisoformat(date_str).date() if date_str else datetime.utcnow().date()
-        except Exception:
-            day = datetime.utcnow().date()
-        return yld, day
-
-    fail(f"API 请求失败：{last_error}")
+                continue
+    if yld is None:
+        raise RuntimeError(f"未从返回数据中解析到利率字段：{row.to_dict()}")
+    return yld, day
 
 
 def send_telegram(text: str) -> None:
