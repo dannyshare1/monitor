@@ -6,10 +6,18 @@ import requests
 THRESHOLD = float(os.getenv("THRESHOLD", "1.85"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-API_URL = os.getenv(
-    "API_URL",
+DEFAULT_API_URLS = [
+    # TradingEconomics current endpoint (2024-2025)
+    "https://api.tradingeconomics.com/bond/yield/country/china?maturity=10y&c=guest:guest",
+    # Legacy endpoint kept for backwards compatibility
     "https://api.tradingeconomics.com/bonds/cn-10y?c=guest:guest",
-)
+]
+
+# Custom API endpoint can be supplied via environment variable. If provided it will
+# override the default list above. This allows the script to be flexible if the
+# upstream service changes again or if a user wants to point to a different data
+# source.
+API_URLS = [os.getenv("API_URL")] if os.getenv("API_URL") else DEFAULT_API_URLS
 
 
 def fail(msg: str, code: int = 1) -> None:
@@ -18,12 +26,31 @@ def fail(msg: str, code: int = 1) -> None:
 
 
 def fetch_yield() -> tuple[float, datetime.date]:
-    r = requests.get(API_URL, timeout=20)
-    if r.status_code != 200:
-        fail(f"API 返回 HTTP {r.status_code}: {r.text}")
-    data = r.json()
-    if isinstance(data, list) and data:
-        data = data[0]
+    """Fetch the latest CN 10Y yield from the first working API endpoint.
+
+    Multiple endpoints are tried in order. The first successful response (HTTP
+    200 and valid JSON body) is used. If all endpoints fail an error is raised.
+    """
+    last_error = None
+    for url in API_URLS:
+        try:
+            r = requests.get(url, timeout=20)
+        except Exception as e:  # network errors
+            last_error = e
+            continue
+        if r.status_code != 200:
+            last_error = RuntimeError(f"HTTP {r.status_code}: {r.text}")
+            continue
+        try:
+            data = r.json()
+        except Exception as e:
+            last_error = e
+            continue
+        if isinstance(data, list) and data:
+            data = data[0]
+        break
+    else:
+        fail(f"API 请求失败：{last_error}")
     yld = None
     for key in (
         "yield",
