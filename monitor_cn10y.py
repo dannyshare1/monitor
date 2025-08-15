@@ -14,11 +14,19 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # The first entry is the date and the third value represents the closing yield
 # of the day.  We request only a single latest entry (`lmt=1`).
 DEFAULT_API_URLS = [
-    "https://push2.eastmoney.com/api/qt/kline/get?secid=131.BND_CND10Y&klt=101&fqt=0&lmt=1",
-    # TradingEconomics current endpoint (2024-2025)
-    "https://api.tradingeconomics.com/bond/yield/country/china?maturity=10y&c=guest:guest",
+    # EastMoney bond yield API. `fields1`/`fields2` are required otherwise the
+    # server responds with a 404 HTML page. The closing yield is the third value
+    # in the comma separated "kline" string.
+    (
+        "https://push2.eastmoney.com/api/qt/kline/get"
+        "?secid=131.BND_CND10Y&klt=101&fqt=0&lmt=1"
+        "&fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54"
+    ),
+    # TradingEconomics current endpoint (2024-2025). Explicit JSON format
+    # parameter is used to avoid IIS 404 responses in some environments.
+    "https://api.tradingeconomics.com/bond/yield/china:10y?c=guest:guest&format=json",
     # Legacy endpoint kept for backwards compatibility
-    "https://api.tradingeconomics.com/bonds/cn-10y?c=guest:guest",
+    "https://api.tradingeconomics.com/bonds/cn-10y?c=guest:guest&format=json",
 ]
 
 # Custom API endpoint can be supplied via environment variable. If provided it will
