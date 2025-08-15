@@ -6,7 +6,15 @@ import requests
 THRESHOLD = float(os.getenv("THRESHOLD", "1.85"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Public data source hosted by EastMoney. The endpoint returns a JSON payload
+# with a list of "klines" where each item is a comma separated string, e.g.::
+#
+#     "2024-01-02,2.50,2.48,2.51,2.47,123456"
+#
+# The first entry is the date and the third value represents the closing yield
+# of the day.  We request only a single latest entry (`lmt=1`).
 DEFAULT_API_URLS = [
+    "https://push2.eastmoney.com/api/qt/kline/get?secid=131.BND_CND10Y&klt=101&fqt=0&lmt=1",
     # TradingEconomics current endpoint (2024-2025)
     "https://api.tradingeconomics.com/bond/yield/country/china?maturity=10y&c=guest:guest",
     # Legacy endpoint kept for backwards compatibility
@@ -46,38 +54,55 @@ def fetch_yield() -> tuple[float, datetime.date]:
         except Exception as e:
             last_error = e
             continue
+
+        # EastMoney structure
+        if isinstance(data, dict) and data.get("data", {}).get("klines"):
+            kline = data["data"]["klines"][0]
+            parts = kline.split(",")
+            try:
+                yld = float(parts[2] if len(parts) > 2 else parts[1])
+            except (IndexError, ValueError) as e:
+                last_error = e
+                continue
+            try:
+                day = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            except Exception:
+                day = datetime.utcnow().date()
+            return yld, day
+
         if isinstance(data, list) and data:
             data = data[0]
-        break
-    else:
-        fail(f"API 请求失败：{last_error}")
-    yld = None
-    for key in (
-        "yield",
-        "Yield",
-        "close",
-        "Close",
-        "last",
-        "Last",
-        "value",
-        "Value",
-        "LatestValue",
-        "latestValue",
-    ):
-        if key in data:
-            try:
-                yld = float(data[key])
-                break
-            except (TypeError, ValueError):
-                pass
-    if yld is None:
-        fail(f"未从 API 返回数据中解析到利率字段：{data}")
-    date_str = data.get("Date") or data.get("date") or data.get("datetime")
-    try:
-        day = datetime.fromisoformat(date_str).date() if date_str else datetime.utcnow().date()
-    except Exception:
-        day = datetime.utcnow().date()
-    return yld, day
+
+        yld = None
+        for key in (
+            "yield",
+            "Yield",
+            "close",
+            "Close",
+            "last",
+            "Last",
+            "value",
+            "Value",
+            "LatestValue",
+            "latestValue",
+        ):
+            if key in data:
+                try:
+                    yld = float(data[key])
+                    break
+                except (TypeError, ValueError):
+                    pass
+        if yld is None:
+            last_error = RuntimeError(f"未从 API 返回数据中解析到利率字段：{data}")
+            continue
+        date_str = data.get("Date") or data.get("date") or data.get("datetime")
+        try:
+            day = datetime.fromisoformat(date_str).date() if date_str else datetime.utcnow().date()
+        except Exception:
+            day = datetime.utcnow().date()
+        return yld, day
+
+    fail(f"API 请求失败：{last_error}")
 
 
 def send_telegram(text: str) -> None:
