@@ -6,6 +6,10 @@ import requests
 THRESHOLD = float(os.getenv("THRESHOLD", "1.85"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# TradingEconomics API key, used when querying their bond yield endpoint. If not
+# provided we fall back to the public `guest:guest` credentials which may be
+# rate limited or return outdated data.
+TE_API_KEY = os.getenv("TE_API_KEY", "guest:guest")
 # Public data source hosted by EastMoney. The endpoint returns a JSON payload
 # with a list of "klines" where each item is a comma separated string, e.g.::
 #
@@ -14,6 +18,18 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # The first entry is the date and the third value represents the closing yield
 # of the day.  We request only a single latest entry (`lmt=1`).
 DEFAULT_API_URLS = [
+    # TradingEconomics current endpoint (2024-2025). We prefer this data source
+    # when a TE_API_KEY is provided. The explicit JSON format parameter avoids
+    # IIS 404 responses in some environments.
+    (
+        "https://api.tradingeconomics.com/bond/yield/china:10y?"
+        f"c={TE_API_KEY}&format=json"
+    ),
+    # Legacy TradingEconomics endpoint kept for backwards compatibility
+    (
+        "https://api.tradingeconomics.com/bonds/cn-10y?"
+        f"c={TE_API_KEY}&format=json"
+    ),
     # EastMoney bond yield API. `fields1`/`fields2` are required otherwise the
     # server responds with a 404 HTML page. The closing yield is the third value
     # in the comma separated "kline" string.
@@ -22,11 +38,6 @@ DEFAULT_API_URLS = [
         "?secid=131.BND_CND10Y&klt=101&fqt=0&lmt=1"
         "&fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54"
     ),
-    # TradingEconomics current endpoint (2024-2025). Explicit JSON format
-    # parameter is used to avoid IIS 404 responses in some environments.
-    "https://api.tradingeconomics.com/bond/yield/china:10y?c=guest:guest&format=json",
-    # Legacy endpoint kept for backwards compatibility
-    "https://api.tradingeconomics.com/bonds/cn-10y?c=guest:guest&format=json",
 ]
 
 # Custom API endpoint can be supplied via environment variable. If provided it will
