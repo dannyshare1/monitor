@@ -1,55 +1,54 @@
 import os
 import sys
-from datetime import datetime, timedelta, date
+from datetime import datetime, date
 import requests
-import tushare as ts
+import pandas as pd
+import akshare as ak
 
 THRESHOLD = float(os.getenv("THRESHOLD", "1.85"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
 
 def fail(msg: str, code: int = 1) -> None:
     print(f"Error: {msg}", file=sys.stderr)
     sys.exit(code)
 
-if not TUSHARE_TOKEN:
-    fail("未配置 TUSHARE_TOKEN")
-PRO = ts.pro_api(TUSHARE_TOKEN)
-
-
 def fetch_yield() -> tuple[float, date]:
-    """从 Tushare 获取最新的中国10年期国债收益率。"""
-    today = datetime.utcnow().strftime("%Y%m%d")
+    """从 Akshare 获取最新的中国10年期国债收益率。"""
     try:
-        df = PRO.bond_yield(trade_date=today)
-        if df.empty:
-            start = (datetime.utcnow() - timedelta(days=7)).strftime("%Y%m%d")
-            df = PRO.bond_yield(start_date=start, end_date=today)
+        df = ak.bond_china_yield()
     except Exception as e:
-        raise RuntimeError(f"Tushare 请求失败：{e}")
+        raise RuntimeError(f"Akshare 请求失败：{e}")
     if df.empty:
-        raise RuntimeError("Tushare 未返回数据")
-    row = df.sort_values(by=df.columns[0]).iloc[-1]
-    date_str = str(row.get("date") or row.get("trade_date") or row.get("cal_date"))
-    try:
-        day = datetime.strptime(date_str, "%Y%m%d").date()
-    except Exception:
+        raise RuntimeError("Akshare 未返回数据")
+    target = df[df.apply(lambda r: r.astype(str).str.contains("国债收益率:10年").any(), axis=1)]
+    if target.empty:
+        raise RuntimeError("未找到国债收益率:10年")
+    row = target.iloc[0]
+    day = None
+    for key in ("日期", "最新日期", "date"):
+        if key in row.index:
+            try:
+                day = pd.to_datetime(row[key]).date()
+                break
+            except Exception:
+                pass
+    if day is None:
         day = datetime.utcnow().date()
     yld = None
-    for key in ("yield", "yld", "close", "rate", "value"):
-        if key in row:
+    for key in ("最新值", "收益率", "利率", "value", "close"):
+        if key in row.index:
             try:
                 yld = float(row[key])
                 break
             except Exception:
                 pass
     if yld is None:
-        for col in row.index:
-            if col in ("date", "trade_date", "cal_date"):
+        for col, val in row.items():
+            if "日" in col or "名" in col or "指" in col:
                 continue
             try:
-                yld = float(row[col])
+                yld = float(val)
                 break
             except Exception:
                 continue
